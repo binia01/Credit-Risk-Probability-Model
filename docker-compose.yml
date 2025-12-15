@@ -6,7 +6,8 @@ services:
       - "8000:8000"
     volumes:
       # Mount models folder so the container can see the trained model
-      - ./models:/app/models
+      - ./mlruns:/home/bini/Documents/repos/Credit-Risk-Probability-Model/mlruns
+      - ./mlflow.db:/app/mlflow.db
     environment:
       - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
     restart: always
