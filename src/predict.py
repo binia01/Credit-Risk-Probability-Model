@@ -4,6 +4,7 @@ import pickle
 import logging
 import os
 import sys
+import mlflow.sklearn
 
 # Setup Logging
 logging.basicConfig(
@@ -16,24 +17,19 @@ logging.basicConfig(
 logger = logging.getLogger("ScoringEngine")
 
 class CreditScoringModel:
-    def __init__(self, model_path='models/logisticregression.pkl'):
+    def __init__(self, model_uri):
         """Initialize the scoring engine by loading the trained model."""
-        self.model_path = model_path
+        self.model_uri = model_uri
         self.model = self._load_model()
 
         self.MIN_SCORE = 300
         self.MAX_SCORE = 850
 
     def _load_model(self):
-        """Loads the mode from the pickle file"""
-        if not os.path.exists(self.model_path):
-            logger.error(f"Model file not found at {self.model_path}")
-            raise FileNotFoundError(f"Model not found at {self.model_path}. Run train.py first")
-        
+        """Loads the mode from the MLflow"""
         try:
-            with open(self.model_path, 'rb') as f:
-                model = pickle.load(f)
-            logger.info(f"Model loaded successfully from {self.model_path}")
+            model = mlflow.sklearn.load_model(self.model_uri)
+            logger.info(f"Model loaded successfully from {self.model_uri}")
             return model
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
