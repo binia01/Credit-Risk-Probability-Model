@@ -16,6 +16,11 @@ class TimeFeatureExtractor(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
+
+        if 'TransactionStartTime' not in X.columns:
+            raise KeyError("Column 'TransactionStartTime' not found in dataset. Check inputs.")
+        
+        
         if 'TransactionStartTime' in X.columns:
             X['TransactionStartTime'] = pd.to_datetime(X['TransactionStartTime'])
             X['Transaction_Hour'] = X['TransactionStartTime'].dt.hour
@@ -313,8 +318,8 @@ def run_pipeline(data_path):
     return final_df
 
 if __name__ == "__main__":
-    data_path = "../data/raw/data.csv" 
-    output_path = "../data/processed/model_ready_data.csv"
+    data_path = "./data/raw/data.csv" 
+    output_path = "./data/processed/model_ready_data.csv"
     try:
 
         processed_data = run_pipeline(data_path)
