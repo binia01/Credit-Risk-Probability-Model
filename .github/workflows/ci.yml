@@ -34,4 +34,5 @@ jobs:
     - name: Run Unit Tests
       run: |
         # Run pytest (ignoring ROS plugins if present in env, though fresh runner won't have them)
+        export PYTHONPATH=$PYTHONPATH:.
         pytest tests/
