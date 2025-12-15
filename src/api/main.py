@@ -21,13 +21,13 @@ model_engine = None
 def load_model():
     global model_engine
     try:
-        model_path = "models/logisticregression.pkl"
-        model_engine = CreditScoringModel(model_path=model_path)
-        logger.info(f"Model loaded successfully from {model_path}")
+        model_uri = "models:/CreditRisk_LogisticRegression/Latest"
+        model_engine = CreditScoringModel(model_uri=model_uri)
+        logger.info(f"Model loaded successfully from {model_uri}")
 
     except Exception as e:
-        logger.error(f"Failed to load model at {model_path}")
-        raise
+        logger.error(f"Failed to load model at {model_uri}")
+        model_engine = None
 
 @app.get("/health")
 def health_check():
