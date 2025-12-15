@@ -2,8 +2,9 @@ import pandas as pd
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.impute import SimpleImputer
+from sklearn.cluster import KMeans
 
 # Custom Transformations
 class TimeFeatureExtractor(BaseEstimator, TransformerMixin):
@@ -59,7 +60,18 @@ class CustomerAggregator(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
+        # Define Snapshot Date for Recency (Max Date + 1 Day)
+        if 'TransactionStartTime' in X.columns:
+            # Fall back if datetime conversion hasn't happended yet
+            snapshot_date = pd.to_datetime(X['TransactionStartTime']).max() + pd.Timedelta(days=1)
+
+        else:
+            # Should not happen if TimeFeatureExtractor ran, but safety first
+            raise ValueError("TransactionStartTime missing for Recency calculation")
+
+        
         agg_rules = {
+            "TransactionStartTime": 'max', # Recency
             'Value': ['sum', 'mean', 'count', 'std']
         }
         
@@ -74,13 +86,18 @@ class CustomerAggregator(BaseEstimator, TransformerMixin):
 
         df_agg = X.groupby('AccountId').agg(agg_rules)
         df_agg.columns = ['_'.join(col).strip() for col in df_agg.columns.values]
+
+        df_agg['Recency'] = (snapshot_date - df_agg['TransactionStartTime_max']).dt.days
         
         df_agg.rename(columns={
-            'Value_sum': 'Total_Transaction_Amount',
-            'Value_mean': 'Average_Transaction_Amount',
-            'Value_count': 'Transaction_Count',
-            'Value_std': 'Std_Transaction_Amount'
+            'Value_sum': 'Monetary_Total',
+            'Value_mean': 'Monetary_Mean',
+            'Value_count': 'Frequency',
+            'Value_std': 'Monetary_Std'
         }, inplace=True)
+
+        # Drop the helper column used for Recency
+        df_agg.drop(columns=['TransactionStartTime_max'], inplace=True, errors='ignore')
         
         df_agg.reset_index(inplace=True)
         return df_agg
@@ -103,6 +120,80 @@ class MissingValueHandler(BaseEstimator, TransformerMixin):
         X[self.cols_to_impute] = imputed_data
         return X
 
+class RiskProxyLabeler(BaseEstimator, TransformerMixin):
+    """
+    Creates: 'RiskLabel' target using K-Means CLustering on RFM features.
+    """
+    def __init__(self, n_clusters=3, random_state=42):
+        self.n_clusters = n_clusters
+        self.random_state = random_state
+        self.kmeans = None
+        self.scaler = None
+        self.high_risk_cluster_label = None
+
+    def fit(self, X, y=None):
+        # We need RFM columns to cluster
+        rfm_cols = ['Recency', 'Frequency', 'Monetary_Total']
+
+        missing = [c for c in rfm_cols if c not in X.columns]
+        if missing:
+            raise KeyError(f"Missing columns for Clustering: {missing}")
+
+        # Log Transform and Scale (Crucial for K-Means with financial data)
+        # Add 1 to avoid log(0)
+        X_rfm = np.log1p(X[rfm_cols])
+        self.scaler = MinMaxScaler()
+        X_scaled = self.scaler.fit_transform(X_rfm)
+
+        # Perform CLustering
+        self.kmeans =KMeans(n_clusters=self.n_clusters, random_state=self.random_state, n_init=10)
+        clusters = self.kmeans.fit_predict(X_scaled)
+        
+
+        # Analyze clusters to identify "High Risk"
+        # Combine labels with original RFM vlaues to check means
+        analysis_df = pd.DataFrame(X[rfm_cols].copy())
+        analysis_df['Cluster'] = clusters
+
+        cluster_stats = analysis_df.groupby('Cluster').mean()
+
+        # Definition of High Risk (Disengaged):
+        # High Recency (Inactive for a long time)
+        # Low Frequency (Rarely buys)
+        # Low Monetary (Spends little)
+        
+        # We create a simple "Risk Score" for ranking: Recency - Frequency - Monetary
+        # (Since we want Max Recency and Min Freq/Monetary)
+        # Note: We use the scaled means for fair comparison if magnitudes differ wildly, 
+        # but here raw means usually suffice to spot the "inactive" group.
+        
+        # Let's verify using the stats:
+        print("\n--- Cluster Analysis for Risk Proxy ---")
+        print(cluster_stats)
+        
+        # Logic: The cluster with the HIGHEST Recency is usually the "Churned/Disengaged" one.
+        # Alternatively, we can look for the lowest Frequency.
+        self.high_risk_cluster_label = cluster_stats['Recency'].idxmax()
+        
+        print(f"\nIdentified Cluster {self.high_risk_cluster_label} as High Risk (Disengaged).")
+        return self
+
+    def transform(self, X):
+        rfm_cols = ['Recency', 'Frequency', 'Monetary_Total']
+        X_rfm = np.log1p(X[rfm_cols])
+
+        X_scaled = self.scaler.transform(X_rfm)
+        
+        clusters = self.kmeans.predict(X_scaled)
+        
+        # Assign 1 if cluster is the high_risk one, else 0
+        X = X.copy()
+        X['RiskLabel'] = (clusters == self.high_risk_cluster_label).astype(int)
+        
+        return X
+
+
+
 class CustomWoETransformer(BaseEstimator, TransformerMixin):
     """
     Custom implementation of Weight of Evidence (WoE) transformation.
@@ -122,8 +213,8 @@ class CustomWoETransformer(BaseEstimator, TransformerMixin):
         df = X.copy()
         df['target'] = y.values
         
-        total_good = df['target'].sum()
-        total_bad = df['target'].count() - total_good
+        total_bad = df['target'].sum()
+        total_good = df['target'].count() - total_bad
         if total_good == 0: total_good = 1
         if total_bad == 0: total_bad = 1
 
@@ -138,8 +229,9 @@ class CustomWoETransformer(BaseEstimator, TransformerMixin):
                     df[f'{col}_bins'] = df[col]
 
                 grouped = df.groupby(f'{col}_bins', observed=False)['target'].agg(['count', 'sum'])
-                grouped['good'] = grouped['sum']
-                grouped['bad'] = grouped['count'] - grouped['sum']
+
+                grouped['bad'] = grouped['sum']
+                grouped['good'] = grouped['count'] - grouped['sum']
                 
                 grouped['dist_good'] = (grouped['good'] + 0.5) / total_good
                 grouped['dist_bad'] = (grouped['bad'] + 0.5) / total_bad
@@ -189,14 +281,20 @@ def run_pipeline(data_path):
     print("Running Pre-processing and Aggregation...")
     X_processed = processing_pipeline.fit_transform(df)
     
-    # 3. Target Creation
-    score = (X_processed['Total_Transaction_Amount'] / X_processed['Total_Transaction_Amount'].max()) + \
-            (X_processed['Transaction_Count'] / X_processed['Transaction_Count'].max())
+    # 3. Proxy target Engineering
+    print("Running Proxy Target Engineering (K-Means)...")
+    labeler = RiskProxyLabeler(n_clusters=3, random_state=42)
+    # Fit finds the clusters and identifies the risky one
+    labeler.fit(X_processed)
+    # Transform assigns the "Risklabel" column
+    X_labeled = labeler.transform(X_processed)
+
+    print("Class Balance (is_high_risk):")
+    print(X_labeled['RiskLabel'].value_counts(normalize=True))
+
     
-    X_processed['RiskLabel'] = (score >= score.quantile(0.75)).astype(int)
-    
-    X = X_processed.drop(columns=['AccountId', 'RiskLabel'])
-    y = X_processed['RiskLabel']
+    X = X_labeled.drop(columns=['AccountId', 'RiskLabel'])
+    y = X_labeled['RiskLabel']
     
     # 4. WoE and Scaling
     ml_pipeline = Pipeline([
@@ -208,7 +306,7 @@ def run_pipeline(data_path):
     X_final = ml_pipeline.fit_transform(X, y)
     
     final_df = pd.DataFrame(X_final, columns=X.columns)
-    final_df['AccountId'] = X_processed['AccountId'].values
+    final_df['AccountId'] = X_labeled['AccountId'].values
     final_df['RiskLabel'] = y.values
     
     print(f"Transformation Complete. Shape: {final_df.shape}")
