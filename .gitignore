@@ -1,3 +1,16 @@
 .venv/
 data/
 __pycache__/
+.env
+env/
+*.py[cod]
+*.csv
+mlruns/
+mlflow.db
+.trash/
+models/
+*.pkl
+plots/
+.vscode/
+.idea/
+.DS_Store
